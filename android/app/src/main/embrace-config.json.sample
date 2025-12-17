@@ -1,0 +1,8 @@
+{
+  "app_id": "YOUR_EMBRACE_APP_ID",
+  "api_token": "YOUR_EMBRACE_API_TOKEN",
+  "ndk_enabled": true,
+  "sdk_config": {
+    "app_framework": "flutter"
+  }
+}
