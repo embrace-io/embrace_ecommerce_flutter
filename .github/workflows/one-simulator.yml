@@ -1,0 +1,190 @@
+name: Session Stitching (Sequential Tests)
+
+on:
+  schedule:
+    # Run every 2 hours at :30 (offset from ci-scheduled.yml)
+    - cron: '30 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to test'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - android
+          - ios
+
+env:
+  FLUTTER_VERSION: "3.24.0"
+  RUN_SOURCE: "one-simulator-stitched"
+
+concurrency:
+  group: one-simulator-tests
+  cancel-in-progress: false
+
+jobs:
+  stitched-android:
+    name: Android Stitched Sessions
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: ${{ github.event.inputs.platform != 'ios' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (Android)
+        run: |
+          cat > android/app/src/main/embrace-config.json << 'EOF'
+          {
+            "app_id": "${{ vars.EMBRACE_APP_ID }}",
+            "api_token": "${{ secrets.EMBRACE_API_TOKEN }}",
+            "ndk_enabled": true,
+            "sdk_config": {
+              "app_framework": "flutter",
+              "session_config": {
+                "session_components": ["breadcrumbs", "spans", "logs"]
+              }
+            }
+          }
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api-34-x86_64-stitched
+
+      - name: Create AVD and cache snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: echo "AVD created and cached"
+
+      - name: Run all Android tests sequentially (stitched sessions)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            chmod +x scripts/run-all-tests.sh
+            ./scripts/run-all-tests.sh android ${{ env.RUN_SOURCE }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-stitched-results
+          path: |
+            test-results/
+          retention-days: 3
+          if-no-files-found: ignore
+
+  stitched-ios:
+    name: iOS Stitched Sessions
+    runs-on: macos-latest
+    timeout-minutes: 90
+    if: ${{ github.event.inputs.platform != 'android' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (iOS)
+        run: |
+          cat > ios/Runner/EmbraceConfig.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>AppId</key>
+              <string>${{ vars.EMBRACE_APP_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Find and boot iOS Simulator
+        id: simulator
+        run: |
+          SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone 16" | grep -v "Plus\|Pro" | head -1 | grep -oE '[A-F0-9-]{36}')
+          if [ -z "$SIMULATOR_UDID" ]; then
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone 15" | grep -v "Plus\|Pro" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+          if [ -z "$SIMULATOR_UDID" ]; then
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> $GITHUB_OUTPUT
+          echo "Found simulator: $SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+
+      - name: Run all iOS tests sequentially (stitched sessions)
+        run: |
+          chmod +x scripts/run-all-tests.sh
+          ./scripts/run-all-tests.sh ios ${{ env.RUN_SOURCE }} ${{ steps.simulator.outputs.SIMULATOR_UDID }}
+
+      - name: Shutdown simulator
+        if: always()
+        run: xcrun simctl shutdown ${{ steps.simulator.outputs.SIMULATOR_UDID }} || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-stitched-results
+          path: |
+            test-results/
+          retention-days: 3
+          if-no-files-found: ignore

@@ -1,0 +1,367 @@
+name: Full Matrix Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_tablet:
+        description: 'Include tablet devices'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  FLUTTER_VERSION: "3.24.0"
+
+concurrency:
+  group: full-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-android-matrix:
+    name: Android - ${{ matrix.device.name }} - ${{ matrix.test.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - name: "Pixel 8"
+            api: 34
+            arch: x86_64
+            target: google_apis
+          - name: "Pixel 6"
+            api: 33
+            arch: x86_64
+            target: google_apis
+          - name: "Pixel 4"
+            api: 30
+            arch: x86_64
+            target: google_apis
+        test:
+          - name: "Auth Flow"
+            file: "auth_flow_test.dart"
+            run_source: "matrix-auth"
+          - name: "Browse Flow"
+            file: "browse_flow_test.dart"
+            run_source: "matrix-browse"
+          - name: "Cart Flow"
+            file: "cart_flow_test.dart"
+            run_source: "matrix-cart"
+          - name: "Search Flow"
+            file: "search_flow_test.dart"
+            run_source: "matrix-search"
+          - name: "Checkout Flow"
+            file: "checkout_flow_test.dart"
+            run_source: "matrix-checkout"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (Android)
+        run: |
+          cat > android/app/src/main/embrace-config.json << 'EOF'
+          {
+            "app_id": "${{ vars.EMBRACE_APP_ID }}",
+            "api_token": "${{ secrets.EMBRACE_API_TOKEN }}",
+            "ndk_enabled": true,
+            "sdk_config": {
+              "app_framework": "flutter",
+              "session_config": {
+                "session_components": ["breadcrumbs", "spans", "logs"]
+              }
+            }
+          }
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Generate RUN_SOURCE
+        id: run-source
+        run: |
+          DEVICE_SHORT=$(echo "${{ matrix.device.name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          RUN_SOURCE="${{ matrix.test.run_source }}-android-${DEVICE_SHORT}"
+          echo "RUN_SOURCE=$RUN_SOURCE" >> $GITHUB_OUTPUT
+
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api-${{ matrix.device.api }}-${{ matrix.device.arch }}
+
+      - name: Run integration test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.device.api }}
+          arch: ${{ matrix.device.arch }}
+          target: ${{ matrix.device.target }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            flutter test integration_test/${{ matrix.test.file }} \
+              --dart-define=RUN_SOURCE=${{ steps.run-source.outputs.RUN_SOURCE }}
+
+  test-ios-matrix:
+    name: iOS - ${{ matrix.device.name }} - ${{ matrix.test.name }}
+    runs-on: macos-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - name: "iPhone 16"
+            runtime: "iOS-18"
+          - name: "iPhone 15 Pro"
+            runtime: "iOS-17"
+          - name: "iPhone SE (3rd generation)"
+            runtime: "iOS-17"
+        test:
+          - name: "Auth Flow"
+            file: "auth_flow_test.dart"
+            run_source: "matrix-auth"
+          - name: "Browse Flow"
+            file: "browse_flow_test.dart"
+            run_source: "matrix-browse"
+          - name: "Cart Flow"
+            file: "cart_flow_test.dart"
+            run_source: "matrix-cart"
+          - name: "Search Flow"
+            file: "search_flow_test.dart"
+            run_source: "matrix-search"
+          - name: "Checkout Flow"
+            file: "checkout_flow_test.dart"
+            run_source: "matrix-checkout"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (iOS)
+        run: |
+          cat > ios/Runner/EmbraceConfig.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>AppId</key>
+              <string>${{ vars.EMBRACE_APP_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Generate RUN_SOURCE
+        id: run-source
+        run: |
+          DEVICE_SHORT=$(echo "${{ matrix.device.name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/(//g' | sed 's/)//g')
+          RUN_SOURCE="${{ matrix.test.run_source }}-ios-${DEVICE_SHORT}"
+          echo "RUN_SOURCE=$RUN_SOURCE" >> $GITHUB_OUTPUT
+
+      - name: Find and boot iOS Simulator
+        id: simulator
+        run: |
+          # Try to find the specific device
+          DEVICE_NAME="${{ matrix.device.name }}"
+          SIMULATOR_UDID=$(xcrun simctl list devices available | grep "$DEVICE_NAME" | head -1 | grep -oE '[A-F0-9-]{36}')
+
+          # Fallback to any iPhone if specific device not found
+          if [ -z "$SIMULATOR_UDID" ]; then
+            echo "Device '$DEVICE_NAME' not found, falling back to any iPhone"
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> $GITHUB_OUTPUT
+          echo "Found simulator: $SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+
+      - name: Run integration test
+        run: |
+          flutter test integration_test/${{ matrix.test.file }} \
+            --dart-define=RUN_SOURCE=${{ steps.run-source.outputs.RUN_SOURCE }} \
+            -d ${{ steps.simulator.outputs.SIMULATOR_UDID }}
+
+      - name: Shutdown simulator
+        if: always()
+        run: xcrun simctl shutdown ${{ steps.simulator.outputs.SIMULATOR_UDID }} || true
+
+  test-tablet:
+    name: Tablet - ${{ matrix.device.platform }} - ${{ matrix.test.name }}
+    runs-on: ${{ matrix.device.runner }}
+    timeout-minutes: 25
+    if: ${{ inputs.include_tablet == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - name: "iPad Pro (12.9-inch)"
+            platform: "iOS"
+            runner: "macos-latest"
+          - name: "Pixel Tablet"
+            platform: "Android"
+            runner: "ubuntu-latest"
+            api: 34
+            arch: x86_64
+        test:
+          - name: "Browse Flow"
+            file: "browse_flow_test.dart"
+            run_source: "matrix-tablet-browse"
+          - name: "Cart Flow"
+            file: "cart_flow_test.dart"
+            run_source: "matrix-tablet-cart"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable KVM (Android only)
+        if: matrix.device.platform == 'Android'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Java (Android only)
+        if: matrix.device.platform == 'Android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (Android)
+        if: matrix.device.platform == 'Android'
+        run: |
+          cat > android/app/src/main/embrace-config.json << 'EOF'
+          {
+            "app_id": "${{ vars.EMBRACE_APP_ID }}",
+            "api_token": "${{ secrets.EMBRACE_API_TOKEN }}",
+            "ndk_enabled": true,
+            "sdk_config": {
+              "app_framework": "flutter"
+            }
+          }
+          EOF
+
+      - name: Configure Embrace SDK (iOS)
+        if: matrix.device.platform == 'iOS'
+        run: |
+          cat > ios/Runner/EmbraceConfig.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>AppId</key>
+              <string>${{ vars.EMBRACE_APP_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Install CocoaPods (iOS only)
+        if: matrix.device.platform == 'iOS'
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Select Xcode version (iOS only)
+        if: matrix.device.platform == 'iOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Run Android tablet test
+        if: matrix.device.platform == 'Android'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.device.api }}
+          arch: ${{ matrix.device.arch }}
+          target: google_apis
+          profile: "pixel_tablet"
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            flutter test integration_test/${{ matrix.test.file }} \
+              --dart-define=RUN_SOURCE=${{ matrix.test.run_source }}-android
+
+      - name: Find and boot iPad Simulator
+        if: matrix.device.platform == 'iOS'
+        id: simulator
+        run: |
+          SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPad Pro" | head -1 | grep -oE '[A-F0-9-]{36}')
+          if [ -z "$SIMULATOR_UDID" ]; then
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPad" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> $GITHUB_OUTPUT
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+
+      - name: Run iOS tablet test
+        if: matrix.device.platform == 'iOS'
+        run: |
+          flutter test integration_test/${{ matrix.test.file }} \
+            --dart-define=RUN_SOURCE=${{ matrix.test.run_source }}-ios \
+            -d ${{ steps.simulator.outputs.SIMULATOR_UDID }}
+
+      - name: Shutdown simulator (iOS only)
+        if: always() && matrix.device.platform == 'iOS'
+        run: xcrun simctl shutdown ${{ steps.simulator.outputs.SIMULATOR_UDID }} || true
+
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [test-android-matrix, test-ios-matrix]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## Full Matrix Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Android Matrix" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-android-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### iOS Matrix" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.test-ios-matrix.result }}" >> $GITHUB_STEP_SUMMARY

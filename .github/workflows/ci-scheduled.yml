@@ -1,0 +1,201 @@
+name: Scheduled Tests (Non-Stitched Sessions)
+
+on:
+  schedule:
+    # Run every 2 hours at :00
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to test'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - android
+          - ios
+
+env:
+  FLUTTER_VERSION: "3.24.0"
+  RUN_SOURCE: "scheduled-browse"
+
+concurrency:
+  group: scheduled-tests
+  cancel-in-progress: true
+
+jobs:
+  test-android:
+    name: Android Scheduled Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: ${{ github.event.inputs.platform != 'ios' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (Android)
+        run: |
+          cat > android/app/src/main/embrace-config.json << 'EOF'
+          {
+            "app_id": "${{ vars.EMBRACE_APP_ID }}",
+            "api_token": "${{ secrets.EMBRACE_API_TOKEN }}",
+            "ndk_enabled": true,
+            "sdk_config": {
+              "app_framework": "flutter",
+              "session_config": {
+                "session_components": ["breadcrumbs", "spans", "logs"]
+              }
+            }
+          }
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Try to download build artifacts
+        id: download-artifacts
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list --workflow=build.yml --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+          if [ -n "$RUN_ID" ]; then
+            gh run download "$RUN_ID" --name android-build-artifacts -D build-cache || echo "Failed to download artifacts"
+          fi
+
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api-34-x86_64
+
+      - name: Create AVD and cache snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: echo "AVD created and cached"
+
+      - name: Run Android integration test (Browse Flow)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            flutter test integration_test/browse_flow_test.dart --dart-define=RUN_SOURCE=${{ env.RUN_SOURCE }}-android
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-scheduled-results
+          path: |
+            build/app/reports/
+          retention-days: 3
+          if-no-files-found: ignore
+
+  test-ios:
+    name: iOS Scheduled Test
+    runs-on: macos-latest
+    timeout-minutes: 35
+    if: ${{ github.event.inputs.platform != 'android' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Configure Embrace SDK (iOS)
+        run: |
+          cat > ios/Runner/EmbraceConfig.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>AppId</key>
+              <string>${{ vars.EMBRACE_APP_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+
+      - name: Find and boot iOS Simulator
+        id: simulator
+        run: |
+          SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone 16" | grep -v "Plus\|Pro" | head -1 | grep -oE '[A-F0-9-]{36}')
+          if [ -z "$SIMULATOR_UDID" ]; then
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone 15" | grep -v "Plus\|Pro" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+          if [ -z "$SIMULATOR_UDID" ]; then
+            SIMULATOR_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -1 | grep -oE '[A-F0-9-]{36}')
+          fi
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> $GITHUB_OUTPUT
+          echo "Found simulator: $SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+
+      - name: Run iOS integration test (Browse Flow)
+        run: |
+          flutter test integration_test/browse_flow_test.dart \
+            --dart-define=RUN_SOURCE=${{ env.RUN_SOURCE }}-ios \
+            -d ${{ steps.simulator.outputs.SIMULATOR_UDID }}
+
+      - name: Shutdown simulator
+        if: always()
+        run: xcrun simctl shutdown ${{ steps.simulator.outputs.SIMULATOR_UDID }} || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-scheduled-results
+          path: |
+            build/ios/
+          retention-days: 3
+          if-no-files-found: ignore
