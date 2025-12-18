@@ -57,7 +57,7 @@ jobs:
         run: |
           cat > android/app/src/main/embrace-config.json << 'EOF'
           {
-            "app_id": "${{ vars.EMBRACE_APP_ID }}",
+            "app_id": "${{ vars.EMBRACE_APP_ID_ANDROID }}",
             "api_token": "${{ secrets.EMBRACE_API_TOKEN }}",
             "ndk_enabled": true,
             "sdk_config": {
@@ -150,7 +150,7 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>AppId</key>
-              <string>${{ vars.EMBRACE_APP_ID }}</string>
+              <string>${{ vars.EMBRACE_APP_ID_IOS }}</string>
           </dict>
           </plist>
           EOF

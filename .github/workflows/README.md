@@ -90,7 +90,8 @@ Examples:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `EMBRACE_APP_ID` | Yes | Embrace App ID for SDK initialization |
+| `EMBRACE_APP_ID_IOS` | Yes | Embrace App ID for iOS |
+| `EMBRACE_APP_ID_ANDROID` | Yes | Embrace App ID for Android |
 
 ### Secrets (Settings > Secrets and variables > Actions > Secrets)
 
