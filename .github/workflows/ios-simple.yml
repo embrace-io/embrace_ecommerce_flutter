@@ -47,16 +47,12 @@ jobs:
       - name: Boot simulator
         id: sim
         run: |
-          # Use iPhone 16 (available on macos-15)
-          UDID=$(xcrun simctl list devices available | grep "iPhone 16" | grep -v "Pro\|Plus\|e" | head -1 | grep -oE '[A-F0-9-]{36}')
-          if [ -z "$UDID" ]; then
-            # Fallback to any iPhone 16
-            UDID=$(xcrun simctl list devices available | grep "iPhone 16" | head -1 | grep -oE '[A-F0-9-]{36}')
-          fi
-          echo "UDID=$UDID"
+          # Use iPhone 16 Pro (available on macos-15)
+          UDID=$(xcrun simctl list devices available | grep "iPhone 16 Pro (" | head -1 | grep -oE '[A-F0-9-]{36}')
+          echo "Using simulator UDID: $UDID"
           echo "udid=$UDID" >> $GITHUB_OUTPUT
           xcrun simctl boot "$UDID" || true
-          sleep 5
+          sleep 10
 
       - name: Build and launch app
         run: |
