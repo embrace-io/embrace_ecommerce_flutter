@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Enable KVM
         run: |
@@ -157,7 +157,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -250,7 +250,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Enable KVM (Android only)
         if: matrix.device.platform == 'Android'
